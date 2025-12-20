@@ -1,0 +1,23 @@
+= Design Documents
+
+== Purpose
+This directory contains detailed design documents for mo11y features and components.
+Design docs explore implementation details, APIs, data models, and system interactions.
+
+== When to Write a Design Doc
+* Before implementing a major feature
+* When designing APIs or interfaces
+* For complex components requiring detailed planning
+* When multiple implementation approaches need evaluation
+
+== Naming Convention
+`feature-name-design.adoc` or `component-name-design.adoc`
+
+Example: `metrics-collection-design.adoc`
+
+== Typical Structure
+* *Overview*: What are we building?
+* *Goals & Non-Goals*: Scope boundaries
+* *Design*: Architecture, data models, APIs
+* *Alternatives Considered*: Other approaches and why they weren't chosen
+* *Open Questions*: Unresolved issues

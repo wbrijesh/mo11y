@@ -1,0 +1,66 @@
+= OpenTelemetry Protocol Specification Reference
+
+*Source:* https://github.com/open-telemetry/opentelemetry-proto/blob/main/docs/specification.md
+
+*Status:* Stable for traces, metrics, logs
+
+== Relevant Sections for mo11y Backend
+
+mo11y implements an OTLP backend. This requires understanding:
+
+=== OTLP/HTTP Transport
+
+* *Default port:* 4318
+* *Default endpoints:*
+  - Traces: `/v1/traces`
+  - Metrics: `/v1/metrics`
+  - Logs: `/v1/logs`
+* *Content types:*
+  - Binary protobuf: `application/x-protobuf`
+  - JSON protobuf: `application/json`
+* *Compression:* gzip (optional, via `Content-Encoding: gzip`)
+* *Method:* HTTP POST
+
+=== Request Format
+
+Requests contain protobuf-encoded messages:
+* `ExportTraceServiceRequest` for traces
+* `ExportMetricsServiceRequest` for metrics
+* `ExportLogsServiceRequest` for logs
+
+=== Response Requirements
+
+==== Success (HTTP 200)
+* Body: `Export<Signal>ServiceResponse` message
+* Leave `partial_success` field unset for full success
+
+==== Partial Success (HTTP 200)
+* Body: `Export<Signal>ServiceResponse` message
+* Set `partial_success.rejected_<signal>` with count of rejected items
+* Set `partial_success.error_message` with human-readable explanation
+
+==== Failures
+* HTTP 400: Bad data (not retryable)
+* HTTP 429: Too many requests (retryable, honor `Retry-After` header)
+* HTTP 503: Service unavailable (retryable)
+* HTTP 502, 504: Gateway errors (retryable)
+
+=== Backend Responsibilities
+
+* Accept protobuf-encoded telemetry data
+* Validate and deserialize requests
+* Store telemetry data
+* Return appropriate success/error responses
+* Handle backpressure via HTTP 429/503
+
+=== What SDKs Handle (Not Backend Concern)
+
+* Instrumentation and data collection
+* Batching and retry logic
+* Exponential backoff
+* Configuration via environment variables
+* Client-side compression
+
+=== Semantic Conventions
+
+Backend must preserve semantic convention attributes but does not enforce them. Validation is SDK responsibility.

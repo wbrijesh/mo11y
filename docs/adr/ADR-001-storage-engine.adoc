@@ -1,0 +1,51 @@
+= ADR-001: Storage Engine
+
+*Status:* Accepted
+
+*Date:* 2025-12-20
+
+== Context
+
+mo11y needs a storage engine for observability data (logs, metrics, traces). Requirements:
+
+* Efficient storage and querying of time-series data
+* Low resource consumption
+* Simple deployment (no separate database process)
+* SQL interface for flexible querying
+* Good compression for storage efficiency
+
+== Decision
+
+We will use *DuckDB* as the embedded storage engine.
+
+== Consequences
+
+=== Positive
+
+* Embedded database - runs in-process, no separate daemon
+* Columnar storage optimized for analytical queries
+* Excellent compression reduces storage footprint
+* SQL interface provides flexibility for querying observability data
+* Handles time-series data efficiently
+* ACID compliance ensures data integrity
+* Active development and growing ecosystem
+
+=== Negative
+
+* Go bindings require CGO, complicating cross-compilation
+* Less mature than PostgreSQL or SQLite
+* Smaller community and fewer resources
+* CGO dependency increases binary size slightly
+
+=== Trade-offs
+
+* CGO complexity is acceptable given the performance and analytical capabilities
+* Embedded nature aligns with mo11y's goal of simple deployment
+* Columnar storage trades write performance for read/analytical performance (acceptable for observability use case)
+
+== Alternatives Considered
+
+* *SQLite*: Simpler, no CGO, but row-oriented storage less efficient for analytical queries on observability data
+* *PostgreSQL*: Mature and powerful but requires separate process, too heavy for small-scale deployments
+* *BadgerDB*: Pure Go, embedded, but lacks SQL interface and analytical query optimization
+* *BoltDB*: Pure Go, simple, but key-value only - would require building query layer

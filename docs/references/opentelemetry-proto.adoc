@@ -1,0 +1,83 @@
+= OpenTelemetry Protocol Buffers Reference
+
+*Source:* https://github.com/open-telemetry/opentelemetry-proto
+
+*Go Package:* `go.opentelemetry.io/proto/otlp`
+
+== Wire Contract Proto Files
+
+mo11y backend must implement these service interfaces and handle these message types.
+
+=== Service Definitions (Collector)
+
+==== Traces
+* *File:* `opentelemetry/proto/collector/trace/v1/trace_service.proto`
+* *Service:* `TraceService`
+* *RPC:* `Export(ExportTraceServiceRequest) returns (ExportTraceServiceResponse)`
+* *Go package:* `go.opentelemetry.io/proto/otlp/collector/trace/v1`
+
+==== Metrics
+* *File:* `opentelemetry/proto/collector/metrics/v1/metrics_service.proto`
+* *Service:* `MetricsService`
+* *RPC:* `Export(ExportMetricsServiceRequest) returns (ExportMetricsServiceResponse)`
+* *Go package:* `go.opentelemetry.io/proto/otlp/collector/metrics/v1`
+
+==== Logs
+* *File:* `opentelemetry/proto/collector/logs/v1/logs_service.proto`
+* *Service:* `LogsService`
+* *RPC:* `Export(ExportLogsServiceRequest) returns (ExportLogsServiceResponse)`
+* *Go package:* `go.opentelemetry.io/proto/otlp/collector/logs/v1`
+
+=== Data Model Definitions
+
+==== Common Types
+* *File:* `opentelemetry/proto/common/v1/common.proto`
+* *Key types:* `AnyValue`, `KeyValue`, `InstrumentationScope`
+* *Go package:* `go.opentelemetry.io/proto/otlp/common/v1`
+
+==== Resource
+* *File:* `opentelemetry/proto/resource/v1/resource.proto`
+* *Key types:* `Resource`
+* *Go package:* `go.opentelemetry.io/proto/otlp/resource/v1`
+
+==== Traces
+* *File:* `opentelemetry/proto/trace/v1/trace.proto`
+* *Key types:* `TracesData`, `ResourceSpans`, `ScopeSpans`, `Span`
+* *Go package:* `go.opentelemetry.io/proto/otlp/trace/v1`
+
+==== Metrics
+* *File:* `opentelemetry/proto/metrics/v1/metrics.proto`
+* *Key types:* `MetricsData`, `ResourceMetrics`, `ScopeMetrics`, `Metric`
+* *Go package:* `go.opentelemetry.io/proto/otlp/metrics/v1`
+
+==== Logs
+* *File:* `opentelemetry/proto/logs/v1/logs.proto`
+* *Key types:* `LogsData`, `ResourceLogs`, `ScopeLogs`, `LogRecord`
+* *Go package:* `go.opentelemetry.io/proto/otlp/logs/v1`
+
+== Request/Response Structure
+
+All signals follow the same pattern:
+
+----
+ExportTraceServiceRequest
+  └─ repeated ResourceSpans resource_spans
+       └─ Resource resource
+       └─ repeated ScopeSpans scope_spans
+            └─ InstrumentationScope scope
+            └─ repeated Span spans
+
+ExportTraceServiceResponse
+  └─ ExportTracePartialSuccess partial_success (optional)
+       └─ int64 rejected_spans
+       └─ string error_message
+----
+
+Same hierarchical structure applies to metrics and logs with their respective types.
+
+== Implementation Notes
+
+* Use official Go protobuf packages: `go.opentelemetry.io/proto/otlp/*`
+* All proto files use `proto3` syntax
+* Backend receives fully-formed messages; no need to understand instrumentation details
+* Preserve all fields when storing; semantic meaning is for query/display layer

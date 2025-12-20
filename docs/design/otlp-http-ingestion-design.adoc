@@ -1,0 +1,315 @@
+= OTLP/HTTP Ingestion Design
+
+*Status:* Draft
+
+*Date:* 2025-12-21
+
+== Overview
+
+Design for implementing OTLP/HTTP ingestion endpoints in mo11y. This covers the HTTP layer that receives telemetry data from OpenTelemetry SDKs and stores it in DuckDB.
+
+== Goals
+
+* 100% OTLP/HTTP specification compliance
+* Support traces, metrics, and logs
+* Binary protobuf encoding (JSON optional for future)
+* Proper HTTP status codes and error semantics
+* Resource efficiency for small-scale deployments
+
+== Non-Goals
+
+* gRPC support (OTLP/gRPC)
+* Custom query APIs (separate design)
+* Authentication/authorization (future)
+* Multi-tenancy (future)
+
+== Design Principles
+
+* *Spec compliance over convenience* - OTLP specification is non-negotiable
+* *Thin HTTP handlers with shared ingestion logic* - Minimize duplication across signals
+* *Resource efficiency for small-scale deployments* - Protect against OOM, optimize for DuckDB
+
+== Design
+
+=== HTTP Endpoints
+
+Implement three endpoints per OTLP specification:
+
+----
+POST /v1/traces   -> TraceService.Export
+POST /v1/metrics  -> MetricsService.Export
+POST /v1/logs     -> LogsService.Export
+----
+
+Each endpoint:
+1. Validates content-type starts with `application/x-protobuf`
+2. Enforces request size limit (~10MB)
+3. Handles gzip decompression if `Content-Encoding: gzip`
+4. Reads and unmarshals protobuf message
+5. Stores data in DuckDB
+6. Returns appropriate response
+
+=== Request Flow
+
+----
+Client
+  |
+  | POST /v1/traces
+  | Content-Type: application/x-protobuf
+  | Content-Encoding: gzip (optional)
+  | Body: ExportTraceServiceRequest (protobuf)
+  v
+Middleware
+  |
+  | Size limit check (10MB)
+  | Gzip decompression
+  v
+HTTP Handler
+  |
+  | Unmarshal protobuf
+  v
+Storage Layer
+  |
+  | Flatten and insert into DuckDB
+  v
+HTTP Response
+  |
+  | 200 OK: ExportTraceServiceResponse
+  | 400 Bad Request: Invalid data (non-retryable)
+  | 429/503: Backpressure (retryable)
+  |
+  v
+Client
+----
+
+=== Handler Structure
+
+Each signal handler follows the same pattern:
+
+[source,go]
+----
+func handleTraces(store *storage.Storage) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Extract request ID from context for logging
+        requestID := getRequestID(r.Context())
+        
+        // 1. Validate method (POST only)
+        // 2. Validate content-type (starts with application/x-protobuf)
+        // 3. Read body (already size-limited by middleware)
+        //    - Log error with request ID on failure → 400
+        // 4. Unmarshal protobuf request
+        //    - Log error with request ID on failure → 400
+        // 5. Store data
+        //    - Log error with request ID on failure → 503
+        // 6. Marshal and write protobuf response
+        //    - Log "BUG:" with request ID on marshal failure → 500
+    }
+}
+----
+
+All non-200 responses must be logged with request ID and signal type.
+
+=== Error Handling
+
+Per OTLP specification:
+
+==== Success Responses (200 OK)
+
+* *Full success*: Return `Export[Signal]ServiceResponse` with empty `partial_success` field
+* *Partial success*: Return `Export[Signal]ServiceResponse` with populated `partial_success`:
+  - Set `rejected_<signal>` count (e.g., `rejected_spans`)
+  - Set `error_message` with human-readable explanation
+
+Response body is always protobuf-encoded `Export[Signal]ServiceResponse`.
+
+==== Error Responses (4xx/5xx)
+
+* *400 Bad Request*: Invalid protobuf, malformed data
+  - Non-retryable - client must drop data
+  - Empty response body
+  - Log error with request ID and signal type
+* *415 Unsupported Media Type*: Invalid Content-Type or Content-Encoding
+  - Non-retryable
+  - Empty response body
+* *429 Too Many Requests*: Rate limiting, backpressure
+  - Retryable - client should back off and retry
+  - Empty response body
+  - Optional `Retry-After` header with seconds to wait
+* *500 Internal Server Error*: Unexpected server bug (e.g., response marshaling failure)
+  - Log loudly with "BUG:" prefix
+  - Empty response body
+* *503 Service Unavailable*: Storage unavailable, overloaded
+  - Retryable - client should back off and retry
+  - Empty response body
+  - Log error with request ID and signal type
+
+All 4xx errors are non-retryable (data dropped). All 5xx and 429 errors are retryable (backpressure).
+
+Response body for error cases is empty per OTLP/HTTP specification.
+
+=== Content-Type Handling
+
+==== Request Validation
+
+Accept `Content-Type` header that starts with `application/x-protobuf`:
+* `application/x-protobuf` ✓
+* `application/x-protobuf; charset=utf-8` ✓
+* `application/json` ✗ (future)
+
+Use `strings.HasPrefix()` for validation to allow optional parameters.
+
+==== Response Content-Type
+
+Always respond with `Content-Type: application/x-protobuf` for 200 OK responses.
+
+Phase 1: Binary protobuf only
+Phase 2 (future): Add JSON support (`application/json`)
+
+=== Compression Support
+
+Gzip compression is required (most OTLP SDKs use it by default).
+
+Implement as middleware:
+* Check `Content-Encoding: gzip` header
+* Wrap request body with `gzip.NewReader()`
+* Remove `Content-Encoding` header after decompression
+* Reject unsupported encodings with 415 Unsupported Media Type
+* Use `defer gz.Close()` for cleanup (scoped to middleware handler lifecycle)
+* Transparent to handlers
+
+Response compression (via `Accept-Encoding: gzip`) is optional for future.
+
+=== Request Size Limits
+
+Protect against OOM with request size limits:
+* Use `http.MaxBytesReader(w, r.Body, maxBytes)` in middleware
+* Target: ~10MB per request
+* Returns 400 Bad Request if exceeded
+* Configurable via environment variable
+
+=== Protobuf Dependencies
+
+Use official OpenTelemetry proto packages:
+
+----
+go.opentelemetry.io/proto/otlp/collector/trace/v1
+go.opentelemetry.io/proto/otlp/collector/metrics/v1
+go.opentelemetry.io/proto/otlp/collector/logs/v1
+go.opentelemetry.io/proto/otlp/trace/v1
+go.opentelemetry.io/proto/otlp/metrics/v1
+go.opentelemetry.io/proto/otlp/logs/v1
+----
+
+No need to maintain our own proto files for OTLP.
+
+=== Storage Interface
+
+Storage layer needs methods for each signal:
+
+[source,go]
+----
+type Storage interface {
+    StoreTraces(ctx context.Context, req *collectortracev1.ExportTraceServiceRequest) error
+    StoreMetrics(ctx context.Context, req *collectormetricsv1.ExportMetricsServiceRequest) error
+    StoreLogs(ctx context.Context, req *collectorlogsv1.ExportLogsServiceRequest) error
+}
+----
+
+==== Data Flattening Strategy
+
+Instead of storing the deep OTLP hierarchy (Resource → Scope → Spans), flatten data for better DuckDB query performance:
+
+* Extract Resource attributes into MAP or JSON column
+* Extract Scope attributes into MAP or JSON column
+* Store spans/metrics/logs as rows with flattened attributes
+* Preserve trace_id, span_id as indexed columns
+
+Detailed schema design is a separate concern (future design doc).
+
+=== Server Structure
+
+----
+internal/
+├── server/
+│   ├── server.go          # HTTP server setup
+│   ├── otlp_traces.go     # /v1/traces handler
+│   ├── otlp_metrics.go    # /v1/metrics handler
+│   ├── otlp_logs.go       # /v1/logs handler
+│   ├── middleware.go      # Request ID, size limit, gzip, recovery
+│   └── health.go          # /health handler
+└── storage/
+    ├── duckdb.go          # Storage implementation
+    ├── traces.go          # Trace storage with flattening
+    ├── metrics.go         # Metric storage with flattening
+    └── logs.go            # Log storage with flattening
+----
+
+=== Request ID Tracking
+
+Implement lightweight request ID middleware:
+* Generate UUID per request
+* Store in `context.Context`
+* Include in all log lines
+* No distributed tracing or header propagation at this stage
+
+[source,go]
+----
+type contextKey string
+const requestIDKey contextKey = "requestID"
+
+func getRequestID(ctx context.Context) string {
+    if id, ok := ctx.Value(requestIDKey).(string); ok {
+        return id
+    }
+    return "unknown"
+}
+----
+
+=== Health Check
+
+Keep simple health endpoint (not OTLP):
+
+----
+GET /health -> JSON response
+{
+  "status": "healthy",
+  "database": "connected"
+}
+----
+
+=== Middleware Stack
+
+Apply middleware in order (execution order, outermost to innermost):
+
+1. *Recovery* - Catch panics, return 503
+2. *Request ID* - Generate UUID, store in context, add to all logs
+3. *Size Limit* - Enforce max request size
+4. *Gzip* - Decompress if Content-Encoding: gzip, remove header after decompression
+
+Note: Middleware wrapping order in code is reverse of execution order.
+
+== Implementation Plan
+
+1. Add request ID middleware with UUID generation
+2. Update gzip middleware to remove Content-Encoding header and reject unsupported encodings
+3. Fix middleware ordering comment in server.go
+4. Add logging to all OTLP handler error paths (with request ID and signal type)
+5. Add "BUG:" logging for response marshaling failures
+6. Clean up empty gen/proto directory
+7. Update storage interface for signal-specific methods
+8. Implement basic storage with data flattening
+9. Add integration tests with OTLP client
+
+== Open Questions
+
+* DuckDB schema design - exact column structure for flattened data?
+* Partial success scenarios - when to use vs full rejection?
+* Batch processing - should we process spans/metrics/logs in parallel?
+* Metrics aggregation - store raw data points or pre-aggregate?
+
+== Alternatives Considered
+
+* *Use existing OTLP receiver library*: Adds heavy dependencies, we only need HTTP handling
+* *Generate handlers from proto*: Unnecessary, handlers are simple enough to write manually
+* *Use connect-go instead of raw HTTP*: Another framework, doesn't add value for our use case
+* *Store raw protobuf in DuckDB*: Poor query performance, defeats purpose of analytical database

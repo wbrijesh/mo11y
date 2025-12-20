@@ -1,0 +1,66 @@
+= ADR-003: HTTP with Protobuf over Twirp
+
+*Status:* Accepted
+
+*Date:* 2025-12-20
+
+*Supersedes:* ADR-002
+
+== Context
+
+ADR-002 chose Twirp for RPC transport. However, mo11y must be OpenTelemetry-compatible as an OTLP backend. This creates fundamental incompatibilities:
+
+* OTLP specification requires specific HTTP endpoints (`/v1/traces`, `/v1/metrics`, `/v1/logs`)
+* OTLP requires specific HTTP status codes (200, 400, 429, 503) for protocol semantics
+* Twirp generates its own URL patterns (`/twirp/package.Service/Method`)
+* Twirp abstracts away HTTP status codes - always returns 200 with error details in body
+* OTLP clients expect standard OTLP/HTTP protocol, not Twirp
+
+The OTLP specification is non-negotiable if mo11y is to be OpenTelemetry-compatible.
+
+== Decision
+
+We will use *HTTP with Protocol Buffers* directly instead of Twirp:
+
+* Standard library `net/http` for HTTP handling
+* Protocol Buffers for serialization
+* Manual HTTP handlers that implement OTLP/HTTP specification
+* Direct control over HTTP status codes and headers
+
+For OTLP endpoints, we implement the specification exactly as defined. For mo11y-specific APIs (health checks, queries), we use the same pattern for consistency.
+
+== Consequences
+
+=== Positive
+
+* Full OTLP/HTTP compatibility - mo11y works as drop-in OTLP backend
+* Complete control over HTTP semantics (status codes, headers)
+* Simpler - no framework abstraction between HTTP and handlers
+* Aligns with "minimal dependencies" philosophy
+* Standard library only for HTTP layer
+
+=== Negative
+
+* More boilerplate - manual request/response handling
+* No automatic RPC routing like Twirp provides
+* Manual protobuf marshaling/unmarshaling
+* Need to handle content-type negotiation manually
+
+=== Trade-offs
+
+* We trade Twirp's convenience for protocol compliance
+* More code to write but complete control over wire protocol
+* Acceptable trade-off since OTLP compatibility is a core requirement
+
+== Migration Impact
+
+* Remove Twirp dependency
+* Rewrite HTTP handlers to use standard library
+* Keep protobuf definitions but remove Twirp generation
+* Update Makefile to only generate `.pb.go` files, not `.twirp.go`
+
+== Alternatives Considered
+
+* *Keep Twirp, add OTLP translation layer*: Adds complexity, two protocols to maintain
+* *Use gRPC*: Heavier than needed, HTTP/2 requirement, doesn't align with minimal approach
+* *Use HTTP framework (chi, gin)*: Unnecessary abstraction, standard library sufficient

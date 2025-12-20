@@ -1,0 +1,21 @@
+= mo11y
+
+**m**ini + **o11y** (observability) = **mo11y** (pronounced "molly")
+
+== What is mo11y?
+
+An observability solution designed for small-scale projects. Most observability tools are built for large-scale production systems. mo11y is built for personal projects, side projects, and small applications that don't need enterprise-grade complexity.
+
+== Status
+
+Currently in planning and design phase.
+
+== Documentation
+
+* link:docs/adr/index.adoc[Architectural Decision Records] - Technical decisions and their rationale
+* link:docs/design/index.adoc[Design Documents] - Detailed component and feature designs
+* link:docs/references/[References] - External specifications and protocols
+
+== Philosophy
+
+Small-scale projects deserve thoughtful observability without the overhead of tools designed for massive scale. mo11y aims to provide meaningful insights with minimal setup and resource usage.

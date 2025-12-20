@@ -1,0 +1,12 @@
+services:
+  mo11y:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      MO11Y_DB_PATH: /data/mo11y.duckdb
+    volumes:
+      - mo11y_data:/data
+
+volumes:
+  mo11y_data:

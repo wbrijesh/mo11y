@@ -1,0 +1,52 @@
+= ADR-002: Transport Protocol
+
+*Status:* Superseded by ADR-003
+
+*Date:* 2025-12-20
+
+== Context
+
+mo11y needs a protocol for clients to send observability data to the server. Requirements:
+
+* Efficient serialization (CPU and bandwidth)
+* Low parsing overhead
+* Type safety
+* Simple client implementation
+* HTTP-based for firewall/proxy compatibility
+
+== Decision
+
+We will use *Twirp* (Twitch's RPC framework) built on Protocol Buffers.
+
+== Consequences
+
+=== Positive
+
+* Protocol Buffers provide efficient binary serialization
+* Significantly lower parsing overhead compared to JSON
+* Type safety through schema definition (.proto files)
+* Generates idiomatic Go code for both client and server
+* HTTP/1.1 compatible - works with existing infrastructure
+* Supports both binary protobuf and JSON (for debugging)
+* Simple, focused framework - minimal abstraction over HTTP
+* Well-documented and battle-tested at scale
+
+=== Negative
+
+* Requires protobuf compiler (protoc) in build pipeline
+* Schema changes require regenerating code
+* Less human-readable than JSON (mitigated by JSON support for debugging)
+* Smaller ecosystem than gRPC
+
+=== Trade-offs
+
+* Binary protocol trades human readability for efficiency (aligns with mo11y's resource-conscious goals)
+* Schema requirement adds process overhead but provides type safety and documentation
+* Twirp over gRPC: simpler, HTTP/1.1, smaller dependency footprint
+
+== Alternatives Considered
+
+* *JSON over HTTP*: Human-readable but expensive to parse, no schema enforcement, larger payload sizes
+* *gRPC*: More features but heavier dependency, HTTP/2 requirement, more complex
+* *MessagePack*: Efficient but lacks schema/type safety, smaller ecosystem
+* *FlatBuffers*: Zero-copy deserialization but more complex, overkill for our use case

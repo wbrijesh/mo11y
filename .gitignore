@@ -1,0 +1,30 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+/mo11y
+
+# Go
+*.out
+go.work
+tmp/
+
+# Generated code
+gen/
+
+# Database files
+*.db
+*.duckdb
+
+# IDE
+.vscode
+.idea
+
+# Environment
+.env
+
+# OS
+.DS_Store

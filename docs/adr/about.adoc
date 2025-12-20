@@ -1,0 +1,22 @@
+= Architectural Decision Records (ADR)
+
+== Purpose
+This directory contains records of architectural decisions made during mo11y development.
+Each ADR captures the context, decision, and consequences of significant technical choices.
+
+== When to Write an ADR
+* Choosing technologies, frameworks, or libraries
+* Defining system architecture or component boundaries
+* Establishing patterns or conventions
+* Making trade-offs that impact future development
+
+== Naming Convention
+`ADR-NNN-title-in-kebab-case.adoc`
+
+Example: `ADR-001-project-goals-and-principles.adoc`
+
+== Template Structure
+* *Status*: Proposed | Accepted | Deprecated | Superseded
+* *Context*: What problem are we solving?
+* *Decision*: What did we decide?
+* *Consequences*: What are the trade-offs?

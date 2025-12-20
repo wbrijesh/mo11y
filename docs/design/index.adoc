@@ -1,0 +1,30 @@
+= Design Documents
+
+This is the index of all design documents for mo11y components and features.
+
+== About Design Docs
+
+Design documents explore implementation details before building. They cover architecture, APIs, data models, and trade-offs. See link:about.adoc[about.adoc] for guidelines on writing design docs.
+
+== Documents
+
+[cols="1,3,1"]
+|===
+|Title |Status |Date
+
+|link:otlp-http-ingestion-design.adoc[OTLP/HTTP Ingestion Design]
+|Draft
+|2025-12-21
+
+|===
+
+_Design docs will be organized by category as more are added._
+
+== Categories
+
+Design docs will be organized by:
+
+* *Core Components* - Fundamental system pieces
+* *Features* - User-facing capabilities
+* *Infrastructure* - Deployment and operations
+* *Integrations* - External system connections
