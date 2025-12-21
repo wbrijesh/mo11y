@@ -16,7 +16,7 @@ import (
 
 func main() {
 	// Configuration
-	port := 8080
+	port := 4318 // Standard OTLP/HTTP port
 	dbPath := os.Getenv("MO11Y_DB_PATH")
 	if dbPath == "" {
 		dbPath = "mo11y.duckdb"
@@ -70,6 +70,5 @@ func init() {
  | '_ ` + "`" + ` _ \ / _ \ | | | | |
  | | | | | | (_) | | | |_| |
  |_| |_| |_|\___/|_|_|\__, |
-                      |___/ 
-`)
+                      |___/`)
 }

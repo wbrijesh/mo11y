@@ -16,9 +16,11 @@ Design documents explore implementation details before building. They cover arch
 |Draft
 |2025-12-21
 
-|===
+|link:duckdb-schema-design.adoc[DuckDB Schema Design]
+|Draft
+|2025-12-21
 
-_Design docs will be organized by category as more are added._
+|===
 
 == Categories
 

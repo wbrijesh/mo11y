@@ -1,0 +1,1105 @@
+= DuckDB Schema Design
+
+*Status:* Draft
+
+*Date:* 2025-12-21
+
+*Last Updated:* 2025-12-21 (Revised after code review)
+
+== Overview
+
+Schema design for storing OTLP telemetry data in DuckDB. This design prioritizes analytical query performance over normalized storage, leveraging DuckDB's columnar engine, native nested types, and vectorized execution.
+
+== Design Philosophy
+
+Following principles from "Designing Data-Intensive Applications":
+
+* *Optimize for read patterns* - Observability is read-heavy (queries >> writes)
+* *Denormalize for analytics* - Wide tables over normalized schemas
+* *Embrace schema flexibility* - MAP types for dynamic OTLP attributes
+* *Batch writes* - Use DuckDB Appender API for high-throughput ingestion
+* *Columnar native types* - JSON is a performance bug in an OLAP database
+* *Partial success* - Accept valid data even when some items fail validation
+
+== OTLP Data Model
+
+OTLP uses a three-level hierarchy:
+
+----
+Resource (service.name, host.name, etc.)
+  └─ Scope (instrumentation library)
+       └─ Signal (Span, LogRecord, Metric)
+----
+
+We flatten this into wide tables, denormalizing resource and scope attributes into each signal row.
+
+== Schema Definition
+
+=== Spans Table
+
+[source,sql]
+----
+CREATE TABLE spans (
+    -- Identity
+    trace_id VARCHAR NOT NULL,
+    span_id VARCHAR NOT NULL,
+    parent_span_id VARCHAR,
+    
+    -- Timing (microsecond precision, converted from OTLP nanoseconds)
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP NOT NULL,
+    duration_ns BIGINT NOT NULL,
+    
+    -- Span metadata
+    name VARCHAR NOT NULL,
+    kind TINYINT NOT NULL,  -- SpanKind enum (0-5)
+    status_code TINYINT,    -- StatusCode enum
+    status_message VARCHAR,
+    
+    -- Resource attributes (denormalized)
+    resource_attrs MAP(VARCHAR, VARCHAR),
+    resource_schema_url VARCHAR,
+    
+    -- Scope attributes (denormalized)
+    scope_name VARCHAR,
+    scope_version VARCHAR,
+    scope_attrs MAP(VARCHAR, VARCHAR),
+    scope_schema_url VARCHAR,
+    
+    -- Span attributes
+    attrs MAP(VARCHAR, VARCHAR),
+    dropped_attrs_count INTEGER,
+    
+    -- Ingestion metadata
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for common query patterns
+-- Note: No PRIMARY KEY for maximum Appender throughput
+CREATE INDEX idx_spans_trace_id ON spans(trace_id);
+CREATE INDEX idx_spans_start_time ON spans(start_time);
+CREATE INDEX idx_spans_name ON spans(name);
+----
+
+=== Span Events Table
+
+Span events are stored in a separate table for optimal columnar compression and query performance.
+
+[source,sql]
+----
+CREATE TABLE span_events (
+    -- Parent span reference
+    trace_id VARCHAR NOT NULL,
+    span_id VARCHAR NOT NULL,
+    
+    -- Event data
+    event_time TIMESTAMP NOT NULL,
+    event_name VARCHAR NOT NULL,
+    event_attrs MAP(VARCHAR, VARCHAR),
+    dropped_attrs_count INTEGER,
+    
+    -- Ingestion metadata
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for joining with spans and filtering
+CREATE INDEX idx_span_events_trace_span ON span_events(trace_id, span_id);
+CREATE INDEX idx_span_events_name ON span_events(event_name);
+CREATE INDEX idx_span_events_time ON span_events(event_time);
+----
+
+=== Span Links Table
+
+Span links are stored in a separate table for the same reasons as events.
+
+[source,sql]
+----
+CREATE TABLE span_links (
+    -- Source span reference
+    trace_id VARCHAR NOT NULL,
+    span_id VARCHAR NOT NULL,
+    
+    -- Linked span reference
+    linked_trace_id VARCHAR NOT NULL,
+    linked_span_id VARCHAR NOT NULL,
+    trace_state VARCHAR,
+    
+    -- Link attributes
+    link_attrs MAP(VARCHAR, VARCHAR),
+    dropped_attrs_count INTEGER,
+    
+    -- Ingestion metadata
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for joining and traversing trace graphs
+CREATE INDEX idx_span_links_trace_span ON span_links(trace_id, span_id);
+CREATE INDEX idx_span_links_linked ON span_links(linked_trace_id, linked_span_id);
+----
+
+=== Logs Table
+
+[source,sql]
+----
+CREATE TABLE logs (
+    -- Identity
+    log_id VARCHAR NOT NULL,  -- Generated UUID
+    trace_id VARCHAR,
+    span_id VARCHAR,
+    
+    -- Timing (microsecond precision, converted from OTLP nanoseconds)
+    timestamp TIMESTAMP NOT NULL,
+    observed_timestamp TIMESTAMP,
+    
+    -- Log content
+    severity_number TINYINT,
+    severity_text VARCHAR,
+    body VARCHAR,  -- Simple string logs
+    body_fields MAP(VARCHAR, VARCHAR),  -- Structured log fields
+    
+    -- Resource attributes (denormalized)
+    resource_attrs MAP(VARCHAR, VARCHAR),
+    resource_schema_url VARCHAR,
+    
+    -- Scope attributes (denormalized)
+    scope_name VARCHAR,
+    scope_version VARCHAR,
+    scope_attrs MAP(VARCHAR, VARCHAR),
+    scope_schema_url VARCHAR,
+    
+    -- Log attributes
+    attrs MAP(VARCHAR, VARCHAR),
+    dropped_attrs_count INTEGER,
+    
+    -- Flags
+    flags INTEGER,
+    
+    -- Ingestion metadata
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for common query patterns
+-- Note: No PRIMARY KEY for maximum Appender throughput
+CREATE INDEX idx_logs_timestamp ON logs(timestamp);
+CREATE INDEX idx_logs_trace_id ON logs(trace_id);
+CREATE INDEX idx_logs_severity ON logs(severity_number);
+----
+
+=== Metrics Table
+
+[source,sql]
+----
+CREATE TABLE metrics (
+    -- Identity
+    metric_id VARCHAR NOT NULL,  -- Generated UUID
+    
+    -- Timing (microsecond precision, converted from OTLP nanoseconds)
+    timestamp TIMESTAMP NOT NULL,
+    
+    -- Metric metadata
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    unit VARCHAR,
+    type TINYINT NOT NULL,  -- MetricType: 1=Gauge, 2=Sum, 3=Histogram, etc.
+    
+    -- Unified metric value (interpretation depends on type)
+    value DOUBLE,
+    
+    -- Sum-specific fields
+    is_monotonic BOOLEAN,
+    
+    -- Histogram-specific fields (stored as JSON - acceptable trade-off)
+    -- Histograms are queried as complete units, less repetition than events
+    histogram_json VARCHAR,
+    
+    -- Resource attributes (denormalized)
+    resource_attrs MAP(VARCHAR, VARCHAR),
+    resource_schema_url VARCHAR,
+    
+    -- Scope attributes (denormalized)
+    scope_name VARCHAR,
+    scope_version VARCHAR,
+    scope_attrs MAP(VARCHAR, VARCHAR),
+    scope_schema_url VARCHAR,
+    
+    -- Data point attributes
+    attrs MAP(VARCHAR, VARCHAR),
+    
+    -- Ingestion metadata
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for common query patterns
+-- Note: No PRIMARY KEY for maximum Appender throughput
+CREATE INDEX idx_metrics_timestamp ON metrics(timestamp);
+CREATE INDEX idx_metrics_name ON metrics(name);
+CREATE INDEX idx_metrics_type ON metrics(type);
+----
+
+== Data Type Mapping
+
+|===
+|OTLP Type |DuckDB Type |Notes
+
+|`bytes trace_id`
+|`VARCHAR`
+|Hex-encoded string (32 chars)
+
+|`bytes span_id`
+|`VARCHAR`
+|Hex-encoded string (16 chars)
+
+|`fixed64 time_unix_nano`
+|`TIMESTAMP`
+|Convert nanoseconds (10^-9) to microseconds (10^-6). Precision loss acceptable for mini-scale.
+
+|`repeated KeyValue attributes`
+|`MAP(VARCHAR, VARCHAR)`
+|Flatten to key-value map, stringify values
+
+|`AnyValue`
+|`VARCHAR`
+|Serialize to string (JSON for complex types)
+
+|`SpanKind enum`
+|`TINYINT`
+|Store enum integer value
+
+|`repeated Span.Event`
+|Separate `span_events` table
+|Columnar storage for optimal compression and query performance
+
+|`repeated Span.Link`
+|Separate `span_links` table
+|Columnar storage for optimal compression and query performance
+
+|`LogRecord.Body (AnyValue)`
+|`VARCHAR` + `MAP(VARCHAR, VARCHAR)`
+|Simple logs → body, structured logs → body_fields
+
+|`Histogram`
+|`VARCHAR` (JSON)
+|Histograms queried as complete units; acceptable trade-off for this specific case
+
+|`Gauge/Sum value`
+|`DOUBLE`
+|Unified value column, type discriminator in type field
+|===
+
+=== Timestamp Precision
+
+OTLP uses nanosecond precision (`fixed64 time_unix_nano`). DuckDB TIMESTAMP uses microsecond precision.
+
+Conversion:
+[source,go]
+----
+func unixNanoToTimestamp(nanos uint64) time.Time {
+    // Divide by 1000 to convert nanoseconds to microseconds
+    // Loss of sub-microsecond precision is acceptable for mo11y
+    return time.Unix(0, int64(nanos))
+}
+----
+
+For small-scale observability, microsecond precision is sufficient. Sub-microsecond timing is rarely meaningful outside of specialized profiling.
+
+== Flattening Strategy
+
+=== Traversal Pattern
+
+For each OTLP request:
+
+----
+ExportTraceServiceRequest
+  └─ for each ResourceSpans
+       ├─ Extract resource attributes → resource_attrs MAP
+       └─ for each ScopeSpans
+            ├─ Extract scope attributes → scope_attrs MAP
+            └─ for each Span
+                 ├─ Extract span fields → INSERT into spans table
+                 ├─ Extract events → INSERT into span_events table
+                 ├─ Extract links → INSERT into span_links table
+                 └─ Flatten span attributes → attrs MAP
+----
+
+Same pattern for metrics and logs.
+
+=== Attribute Flattening
+
+OTLP `KeyValue` attributes use `AnyValue` which can be:
+- Primitive: string, bool, int, double
+- Complex: array, kvlist, bytes
+
+Flattening logic:
+
+[source,go]
+----
+func flattenAttributes(kvs []*commonv1.KeyValue) map[string]string {
+    result := make(map[string]string)
+    for _, kv := range kvs {
+        result[kv.Key] = anyValueToString(kv.Value)
+    }
+    return result
+}
+
+func anyValueToString(v *commonv1.AnyValue) string {
+    switch v := v.Value.(type) {
+    case *commonv1.AnyValue_StringValue:
+        return v.StringValue
+    case *commonv1.AnyValue_IntValue:
+        return strconv.FormatInt(v.IntValue, 10)
+    case *commonv1.AnyValue_DoubleValue:
+        return strconv.FormatFloat(v.DoubleValue, 'f', -1, 64)
+    case *commonv1.AnyValue_BoolValue:
+        return strconv.FormatBool(v.BoolValue)
+    case *commonv1.AnyValue_ArrayValue, *commonv1.AnyValue_KvlistValue:
+        // Serialize complex types to JSON
+        return toJSON(v)
+    default:
+        return ""
+    }
+}
+----
+
+=== Events and Links Conversion
+
+Convert OTLP repeated fields to separate table rows:
+
+[source,go]
+----
+// Store events in span_events table
+func storeSpanEvents(appender *duckdb.Appender, traceID, spanID string, events []*tracev1.Span_Event) error {
+    for _, e := range events {
+        err := appender.AppendRow(
+            traceID,
+            spanID,
+            unixNanoToTime(e.TimeUnixNano),
+            e.Name,
+            flattenAttributes(e.Attributes),
+            int32(e.DroppedAttributesCount),
+            time.Now(), // ingested_at
+        )
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+// Store links in span_links table
+func storeSpanLinks(appender *duckdb.Appender, traceID, spanID string, links []*tracev1.Span_Link) error {
+    for _, l := range links {
+        err := appender.AppendRow(
+            traceID,
+            spanID,
+            hexEncode(l.TraceId),
+            hexEncode(l.SpanId),
+            l.TraceState,
+            flattenAttributes(l.Attributes),
+            int32(l.DroppedAttributesCount),
+            time.Now(), // ingested_at
+        )
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+----
+
+== Ingestion Strategy
+
+=== DuckDB Appender API
+
+Use DuckDB's Appender for batch inserts (10-100x faster than individual INSERTs).
+
+Multiple appenders are used for spans with events/links:
+
+[source,go]
+----
+// Create appenders for spans, events, and links
+spanAppender, _ := duckdb.NewAppenderFromConn(conn, "", "spans")
+eventAppender, _ := duckdb.NewAppenderFromConn(conn, "", "span_events")
+linkAppender, _ := duckdb.NewAppenderFromConn(conn, "", "span_links")
+
+defer spanAppender.Close()
+defer eventAppender.Close()
+defer linkAppender.Close()
+
+// Process each span
+for _, span := range spans {
+    // Append span
+    spanAppender.AppendRow(traceID, spanID, startTime, ...)
+    
+    // Append events for this span
+    for _, event := range span.Events {
+        eventAppender.AppendRow(traceID, spanID, event.Time, event.Name, ...)
+    }
+    
+    // Append links for this span
+    for _, link := range span.Links {
+        linkAppender.AppendRow(traceID, spanID, link.TraceID, link.SpanID, ...)
+    }
+}
+
+// Flush all appenders
+spanAppender.Flush()
+eventAppender.Flush()
+linkAppender.Flush()
+----
+
+=== Batch Size
+
+- Target: 1000-5000 rows per batch
+- Trade-off: Latency vs throughput
+- For small-scale: 1000 rows is sufficient
+
+=== Partial Success Handling
+
+Per OTLP specification, the ingestion layer must support partial success:
+
+* *Continue processing* even if individual items fail validation
+* *Return 200 OK* with details about rejected items
+* *Only return 503* for infrastructure failures (DB unavailable, disk full)
+
+Implementation approach:
+
+[source,go]
+----
+type StoreResult struct {
+    Accepted int
+    Rejected int
+    Errors   []string  // Human-readable error messages
+}
+
+func (s *Storage) StoreTraces(ctx context.Context, req *ExportTraceServiceRequest) (*StoreResult, error) {
+    result := &StoreResult{}
+    
+    // Process each span, collecting errors but continuing
+    for _, rs := range req.ResourceSpans {
+        for _, ss := range rs.ScopeSpans {
+            for _, span := range ss.Spans {
+                if err := validateAndAppendSpan(span); err != nil {
+                    result.Rejected++
+                    result.Errors = append(result.Errors, err.Error())
+                } else {
+                    result.Accepted++
+                }
+            }
+        }
+    }
+    
+    // Only return error for infrastructure failures
+    if err := appender.Flush(); err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    
+    return result, nil
+}
+----
+
+=== Error Type Differentiation
+
+Storage layer distinguishes between error types:
+
+* *Infrastructure errors* (503 Service Unavailable):
+  - Database connection lost
+  - Disk full
+  - Appender creation failed
+  - Cannot flush data
+
+* *Invalid data errors* (handled via partial success):
+  - Malformed span structure
+  - Type conversion failures
+  - Invalid timestamp values
+  - Schema validation failures
+
+Handlers use error types to determine HTTP status codes:
+
+[source,go]
+----
+result, err := store.StoreTraces(r.Context(), req)
+if err != nil {
+    var storageErr *storage.StorageError
+    if errors.As(err, &storageErr) {
+        // Infrastructure error - retryable
+        log.Printf("[%s] traces: storage unavailable: %v", reqID, err)
+        w.WriteHeader(http.StatusServiceUnavailable)
+        return
+    }
+}
+
+// Build response with partial success if needed
+resp := &collectortracev1.ExportTraceServiceResponse{}
+if result.Rejected > 0 {
+    resp.PartialSuccess = &collectortracev1.ExportTracePartialSuccess{
+        RejectedSpans: int64(result.Rejected),
+        ErrorMessage:  strings.Join(result.Errors, "; "),
+    }
+}
+----
+
+== Design Trade-offs
+
+=== Separate Tables for Events and Links
+
+*Initial approach* (rejected due to driver limitations):
+----
+spans table with:
+  events LIST(STRUCT(time, name, attrs MAP(...)))
+  links LIST(STRUCT(trace_id, span_id, attrs MAP(...)))
+----
+
+*Current approach*:
+----
+spans table (core span data)
+span_events table (one row per event)
+span_links table (one row per link)
+----
+
+*Why separate tables?*
+
+* *Driver limitation*: DuckDB Go driver has issues with `LIST(STRUCT(...))` containing `MAP` fields when using the Appender API
+* *Performance benefits*:
+  - Event names like "http.request", "db.query" compress extremely well in columnar storage
+  - Queries filtering on event names read only the event_name column, not entire event data
+  - Vectorized execution on event fields
+* *Query patterns*: Most queries filter on span fields, not events. When events are needed, you're typically looking at a specific trace (already filtered), so JOINs are cheap
+* *Acceptable trade-off*: Small JOIN cost for massive compression and query performance gains
+
+*Histogram JSON exception*:
+Histograms remain as JSON because:
+* Histograms are always queried as complete units (need all buckets)
+* Less repetition in histogram data compared to event names
+* Acceptable performance trade-off for this specific use case
+
+=== Wide Tables vs Normalized
+
+*Normalized approach* (rejected):
+----
+resources (id, attrs)
+scopes (id, resource_id, attrs)
+spans (id, scope_id, ...)
+----
+
+*Why wide tables?*
+
+* *Query simplicity* - No JOINs for common queries
+* *Columnar efficiency* - DuckDB compresses repeated values well
+* *OTLP semantics* - Resource/scope are contextual, not entities
+* *Small scale* - Storage overhead is negligible for mo11y's use case
+
+=== MAP vs JSON for Attributes
+
+*MAP(VARCHAR, VARCHAR)*:
+* ✓ Type-safe key-value access
+* ✓ Efficient storage and compression
+* ✓ Direct SQL access: `resource_attrs['service.name']`
+* ✗ All values stringified (lose type information)
+
+*JSON*:
+* ✓ Preserves type information
+* ✗ Requires JSON path syntax
+* ✗ Less efficient for key-value access
+
+For observability attributes (mostly strings), MAP is the better choice.
+
+=== LIST(STRUCT) vs JSON for Nested Data (Historical Context)
+
+*Why we initially wanted LIST(STRUCT) over JSON:*
+
+JSON is a performance bug in an OLAP database:
+* JSON requires parsing on every query
+* JSON columns are opaque blobs to the query optimizer
+* JSON prevents vectorized execution
+
+LIST(STRUCT) enables columnar shredding:
+* DuckDB stores each struct field in separate columns
+* Queries can skip reading unused fields
+* Vectorized execution works on struct fields
+* Compression applies per-field, not per-blob
+
+*Why we use separate tables instead:*
+
+Due to DuckDB Go driver limitations with `LIST(STRUCT(...))` containing `MAP` fields, we use separate tables for events and links. This provides the same columnar benefits while working within driver constraints.
+
+Histograms remain as JSON because they're always queried as complete units and have less repetition than events.
+
+=== No PRIMARY KEY Constraints
+
+DuckDB's Appender API bypasses constraint checking for maximum throughput. PRIMARY KEY constraints force synchronous duplicate detection, reducing insert performance by 10-50x.
+
+For mo11y's use case:
+* OTLP clients don't send duplicates (stateless protocol)
+* Duplicate detection is unnecessary overhead
+* If duplicates occur, they're harmless (idempotent data)
+
+Trade-off: Accept rare duplicates for 10-50x faster ingestion.
+
+== Vectorized Query Benefits
+
+DuckDB's columnar engine excels at vectorized execution. Using separate tables for events and links (instead of JSON) enables significant performance gains through columnar storage.
+
+=== Columnar Storage for Events
+
+With separate `span_events` table, DuckDB stores each column independently:
+----
+span_events table:
+  ├─ trace_id column (VARCHAR, compressed)
+  ├─ span_id column (VARCHAR, compressed)
+  ├─ event_time column (TIMESTAMP, compressed)
+  ├─ event_name column (VARCHAR, highly compressed - many duplicates)
+  └─ event_attrs column (MAP, compressed)
+----
+
+This allows queries to read only the columns they need.
+
+=== Query Performance Example
+
+Query: Find spans with specific event names:
+[source,sql]
+----
+SELECT s.trace_id, s.span_id, s.name
+FROM spans s
+JOIN span_events e ON s.trace_id = e.trace_id AND s.span_id = e.span_id
+WHERE e.event_name = 'http.request'
+  AND s.start_time >= NOW() - INTERVAL '1 hour';
+----
+
+*With separate table*:
+* DuckDB reads only the `event_name` column from span_events
+* Skips reading `event_time` and `event_attrs`
+* Vectorized comparison on name strings
+* JOIN is cheap when filtered by time (small result set)
+* Result: Fast, columnar scan
+
+*With JSON (alternative)*:
+* Must parse entire JSON blob for each row
+* Cannot skip unused fields
+* Scalar (non-vectorized) JSON parsing
+* Result: Slow, CPU-bound
+
+=== Filtering Events
+
+[source,sql]
+----
+-- Filter events by timestamp and name (only reads 2 columns)
+SELECT s.trace_id, s.span_id, s.name, e.event_name, e.event_time
+FROM spans s
+JOIN span_events e ON s.trace_id = e.trace_id AND s.span_id = e.span_id
+WHERE e.event_time > NOW() - INTERVAL '1 hour'
+  AND e.event_name LIKE 'http.%'
+  AND s.start_time >= NOW() - INTERVAL '1 hour';
+----
+
+DuckDB's optimizer pushes predicates down, reading minimal data from both tables.
+
+=== Histogram Queries
+
+With native STRUCT for histograms:
+[source,sql]
+----
+-- Calculate P95 from histogram buckets (vectorized array operations)
+SELECT 
+    name,
+    histogram.explicit_bounds[
+        list_position(
+            list_cumsum(histogram.bucket_counts),
+            histogram.count * 0.95
+        )
+    ] AS p95_value
+FROM metrics
+WHERE type = 3  -- Histogram
+  AND timestamp > NOW() - INTERVAL '1 hour';
+----
+
+Array operations (`list_cumsum`, `list_position`) are vectorized and operate on native arrays, not parsed JSON.
+
+== Query Examples
+
+=== Find Average Span Duration by Service
+
+[source,sql]
+----
+SELECT 
+    resource_attrs['service.name'] AS service,
+    AVG(duration_ns) / 1e9 AS avg_duration_seconds,
+    COUNT(*) AS span_count
+FROM spans
+WHERE start_time >= NOW() - INTERVAL '1 hour'
+GROUP BY service
+ORDER BY avg_duration_seconds DESC;
+----
+
+=== Search Logs for Trace ID
+
+[source,sql]
+----
+SELECT 
+    timestamp,
+    severity_text,
+    body,
+    resource_attrs['service.name'] AS service
+FROM logs
+WHERE trace_id = 'abc123...'
+ORDER BY timestamp;
+----
+
+=== Top 10 Slowest Spans
+
+[source,sql]
+----
+SELECT 
+    name,
+    resource_attrs['service.name'] AS service,
+    duration_ns / 1e9 AS duration_seconds,
+    start_time
+FROM spans
+WHERE start_time >= NOW() - INTERVAL '1 hour'
+ORDER BY duration_ns DESC
+LIMIT 10;
+----
+
+=== Metric Time Series
+
+[source,sql]
+----
+SELECT 
+    time_bucket(INTERVAL '1 minute', timestamp) AS bucket,
+    AVG(value) AS avg_value
+FROM metrics
+WHERE name = 'http.server.request.duration'
+  AND type = 1  -- Gauge
+  AND timestamp >= NOW() - INTERVAL '1 hour'
+GROUP BY bucket
+ORDER BY bucket;
+----
+
+=== Error Rate by Service
+
+[source,sql]
+----
+SELECT 
+    resource_attrs['service.name'] AS service,
+    COUNT(*) FILTER (WHERE status_code = 2) AS error_count,
+    COUNT(*) AS total_count,
+    (error_count::FLOAT / total_count * 100) AS error_rate_pct
+FROM spans
+WHERE start_time >= NOW() - INTERVAL '1 hour'
+GROUP BY service
+ORDER BY error_rate_pct DESC;
+----
+
+=== Query Span Events
+
+[source,sql]
+----
+-- Find spans with specific event names
+SELECT s.trace_id, s.span_id, s.name, s.duration_ns,
+       e.event_name, e.event_time
+FROM spans s
+JOIN span_events e ON s.trace_id = e.trace_id AND s.span_id = e.span_id
+WHERE e.event_name = 'exception'
+  AND s.start_time >= NOW() - INTERVAL '1 hour'
+ORDER BY s.start_time DESC;
+----
+
+=== Query Span Links
+
+[source,sql]
+----
+-- Find all spans linked to a specific trace
+SELECT s.trace_id, s.span_id, s.name,
+       l.linked_trace_id, l.linked_span_id
+FROM spans s
+JOIN span_links l ON s.trace_id = l.trace_id AND s.span_id = l.span_id
+WHERE l.linked_trace_id = 'abc123...'
+  AND s.start_time >= NOW() - INTERVAL '1 hour';
+----
+
+=== Histogram P95 Calculation
+
+[source,sql]
+----
+-- Calculate P95 latency from histogram data
+SELECT 
+    name,
+    attrs['http.method'] AS method,
+    histogram.explicit_bounds[
+        list_position(
+            list_cumsum(histogram.bucket_counts),
+            histogram.count * 0.95
+        )
+    ] AS p95_latency_ms
+FROM metrics
+WHERE type = 3  -- Histogram
+  AND name = 'http.server.request.duration'
+  AND timestamp >= NOW() - INTERVAL '1 hour'
+ORDER BY p95_latency_ms DESC;
+----
+
+== Performance Considerations
+
+=== Write Path
+
+* *Use Appender API* - 10-100x faster than INSERT statements
+* *Batch size* - Target 1000-5000 rows per batch
+* *No PRIMARY KEY* - Eliminates synchronous duplicate checking overhead
+* *Async writes* - Consider buffering for high throughput (future)
+
+Appender bypasses SQL parsing, planning, and constraint checking. It writes directly to DuckDB's internal columnar format.
+
+=== Read Path
+
+* *Time-based indexes* - Most queries filter by timestamp
+* *Trace ID indexes* - Distributed tracing queries
+* *MAP access* - Efficient: `attrs['key']` uses hash lookup
+* *LIST(STRUCT) shredding* - Columnar storage enables selective field reads
+* *Vectorized execution* - Native types enable SIMD operations
+
+=== Storage Efficiency
+
+* *Columnar compression* - Repeated values compress to ~1 byte per row
+* *MAP compression* - Sparse attributes compress efficiently
+* *LIST(STRUCT) compression* - Each sub-column compressed independently
+* *Expected size* - ~100-500 bytes per span (compressed)
+
+DuckDB's default compression (lightweight compression + dictionary encoding) is optimal for observability data.
+
+=== Ingestion Throughput
+
+Expected performance on commodity hardware (4 cores, 8GB RAM):
+
+* *Spans* - 50,000-100,000 spans/sec with Appender
+* *Logs* - 100,000-200,000 logs/sec (smaller than spans)
+* *Metrics* - 200,000-500,000 data points/sec (simplest structure)
+
+Bottleneck is typically attribute flattening (Go string operations), not DuckDB writes.
+
+== Implementation Notes
+
+=== Schema Initialization
+
+Create all tables on first startup:
+
+[source,go]
+----
+func (s *Storage) initSchema(ctx context.Context) error {
+    schemas := []string{
+        spansSchema, spanEventsSchema, spanLinksSchema,
+        logsSchema, metricsSchema,
+    }
+    for _, schema := range schemas {
+        if _, err := s.db.ExecContext(ctx, schema); err != nil {
+            return err
+        }
+    }
+    
+    // Create indexes
+    indexes := []string{
+        spansIndexes, spanEventsIndexes, spanLinksIndexes,
+        logsIndexes, metricsIndexes,
+    }
+    for _, idx := range indexes {
+        if _, err := s.db.ExecContext(ctx, idx); err != nil {
+            return err
+        }
+    }
+    
+    return nil
+}
+----
+
+=== Using DuckDB Appender
+
+High-throughput ingestion pattern with multiple appenders:
+
+[source,go]
+----
+import "github.com/marcboeker/go-duckdb"
+
+func (s *Storage) StoreTraces(ctx context.Context, req *collectortracev1.ExportTraceServiceRequest) (*StoreResult, error) {
+    conn, err := s.db.Conn(ctx)
+    if err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    defer conn.Close()
+    
+    // Create appenders for all three tables
+    spanAppender, err := duckdb.NewAppenderFromConn(conn, "", "spans")
+    if err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    defer spanAppender.Close()
+    
+    eventAppender, err := duckdb.NewAppenderFromConn(conn, "", "span_events")
+    if err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    defer eventAppender.Close()
+    
+    linkAppender, err := duckdb.NewAppenderFromConn(conn, "", "span_links")
+    if err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    defer linkAppender.Close()
+    
+    result := &StoreResult{}
+    
+    // Flatten OTLP hierarchy and append rows
+    for _, rs := range req.ResourceSpans {
+        resourceAttrs := flattenAttributes(rs.Resource.Attributes)
+        
+        for _, ss := range rs.ScopeSpans {
+            scopeAttrs := flattenAttributes(ss.Scope.Attributes)
+            
+            for _, span := range ss.Spans {
+                traceID := hex.EncodeToString(span.TraceId)
+                spanID := hex.EncodeToString(span.SpanId)
+                
+                // Append span
+                err := spanAppender.AppendRow(
+                    traceID,
+                    spanID,
+                    hex.EncodeToString(span.ParentSpanId),
+                    unixNanoToTime(span.StartTimeUnixNano),
+                    unixNanoToTime(span.EndTimeUnixNano),
+                    int64(span.EndTimeUnixNano - span.StartTimeUnixNano),
+                    span.Name,
+                    int8(span.Kind),
+                    int8(span.Status.Code),
+                    span.Status.Message,
+                    resourceAttrs,
+                    rs.SchemaUrl,
+                    ss.Scope.Name,
+                    ss.Scope.Version,
+                    scopeAttrs,
+                    ss.SchemaUrl,
+                    flattenAttributes(span.Attributes),
+                    int32(span.DroppedAttributesCount),
+                    time.Now(), // ingested_at
+                )
+                if err != nil {
+                    result.Rejected++
+                    result.Errors = append(result.Errors, fmt.Sprintf("span %s: %v", spanID, err))
+                    continue
+                }
+                result.Accepted++
+                
+                // Append events
+                for _, event := range span.Events {
+                    eventAppender.AppendRow(
+                        traceID,
+                        spanID,
+                        unixNanoToTime(event.TimeUnixNano),
+                        event.Name,
+                        flattenAttributes(event.Attributes),
+                        int32(event.DroppedAttributesCount),
+                        time.Now(),
+                    )
+                }
+                
+                // Append links
+                for _, link := range span.Links {
+                    linkAppender.AppendRow(
+                        traceID,
+                        spanID,
+                        hex.EncodeToString(link.TraceId),
+                        hex.EncodeToString(link.SpanId),
+                        link.TraceState,
+                        flattenAttributes(link.Attributes),
+                        int32(link.DroppedAttributesCount),
+                        time.Now(),
+                    )
+                }
+            }
+        }
+    }
+    
+    // Flush all appenders
+    if err := spanAppender.Flush(); err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    if err := eventAppender.Flush(); err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    if err := linkAppender.Flush(); err != nil {
+        return nil, &StorageError{Type: ErrorTypeInfrastructure, Cause: err}
+    }
+    
+    return result, nil
+}
+----
+
+=== Why No PRIMARY KEY?
+
+DuckDB's Appender API is designed for bulk loading. When PRIMARY KEY constraints exist:
+
+1. Each row must be checked against existing data
+2. Requires synchronous index lookups
+3. Reduces throughput by 10-50x
+
+For mo11y:
+* OTLP is stateless - clients don't resend data
+* Duplicates are rare and harmless (idempotent)
+* 10-50x throughput gain is worth accepting rare duplicates
+
+If duplicate detection is needed, use application-level deduplication (e.g., bloom filter) before insertion.
+
+=== Schema Migrations
+
+For mo11y's small scale:
+* Manual migrations via SQL scripts
+* Version tracking in `schema_version` table
+* No automatic migration framework needed
+
+Example migration:
+[source,sql]
+----
+-- migrations/001_add_span_flags.sql
+ALTER TABLE spans ADD COLUMN flags INTEGER DEFAULT 0;
+UPDATE schema_version SET version = 1;
+----
+
+== Open Questions
+
+* Retention policy - how long to keep data? (future: TTL or partitioning)
+* Sampling - should we sample high-volume traces? (future)
+* Aggregation - pre-aggregate metrics for faster queries? (future)
+* Compression - enable DuckDB compression explicitly? (default is good)
+
+== Summary of Key Decisions
+
+=== Schema Structure
+* *5 tables total*: spans, span_events, span_links, logs, metrics
+* *Wide tables* for core data (spans, logs, metrics) with denormalized resource/scope attributes
+* *Separate tables* for events and links to achieve columnar benefits despite driver limitations
+* *No PRIMARY KEY* constraints for maximum Appender throughput
+
+=== Data Types
+* *MAP(VARCHAR, VARCHAR)* for all attribute storage (resource, scope, span, event, link)
+* *VARCHAR* for trace_id/span_id (hex-encoded)
+* *TIMESTAMP* with microsecond precision (converted from OTLP nanoseconds)
+* *JSON* only for histograms (acceptable trade-off - queried as complete units)
+
+=== OTLP Compliance
+* *Partial success* support - continue processing valid data when some items fail
+* *Error type differentiation* - 503 for infrastructure errors, 200 + partial_success for data errors
+* *StoreResult* return type with accepted/rejected counts and error messages
+
+=== Performance Optimizations
+* *DuckDB Appender API* for 10-100x faster ingestion vs INSERT statements
+* *Multiple appenders* for spans, events, and links in single transaction
+* *Columnar compression* on event names and other repeated values
+* *Indexed columns* for common query patterns (trace_id, timestamps, names)
+
+=== Trade-offs Accepted
+* *Separate tables require JOINs* - acceptable because most queries filter on spans first
+* *Rare duplicates possible* - no PRIMARY KEY means no duplicate detection
+* *Histogram JSON* - acceptable because histograms queried as complete units
+* *Microsecond precision* - sub-microsecond timing not needed for small-scale observability
+
+== References
+
+* DuckDB Appender API: https://duckdb.org/docs/data/appender
+* DuckDB MAP type: https://duckdb.org/docs/sql/data_types/map
+* OTLP Specification: docs/references/opentelemetry-specification.adoc

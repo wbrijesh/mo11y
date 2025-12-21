@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -47,14 +48,30 @@ func handleMetrics(store *storage.Storage) http.HandlerFunc {
 		}
 
 		// 5. Store data
-		if err := store.StoreMetrics(r.Context(), req); err != nil {
-			log.Printf("[%s] metrics: storage failed: %v", reqID, err)
+		result, err := store.StoreMetrics(r.Context(), req)
+		if err != nil {
+			var storageErr *storage.StorageError
+			if errors.As(err, &storageErr) {
+				log.Printf("[%s] metrics: storage unavailable: %v", reqID, err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			log.Printf("[%s] metrics: unexpected error: %v", reqID, err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-		// 6. Marshal and write protobuf response
+		log.Printf("[%s] metrics: accepted %d, rejected %d data points", reqID, result.Accepted, result.Rejected)
+
+		// 6. Build response with partial success if needed
 		resp := &collectormetricsv1.ExportMetricsServiceResponse{}
+		if result.HasRejections() {
+			resp.PartialSuccess = &collectormetricsv1.ExportMetricsPartialSuccess{
+				RejectedDataPoints: int64(result.Rejected),
+				ErrorMessage:       result.ErrorMessage(),
+			}
+		}
+
 		respBytes, err := proto.Marshal(resp)
 		if err != nil {
 			log.Printf("[%s] BUG: metrics: failed to marshal response: %v", reqID, err)

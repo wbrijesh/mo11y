@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -47,14 +48,30 @@ func handleLogs(store *storage.Storage) http.HandlerFunc {
 		}
 
 		// 5. Store data
-		if err := store.StoreLogs(r.Context(), req); err != nil {
-			log.Printf("[%s] logs: storage failed: %v", reqID, err)
+		result, err := store.StoreLogs(r.Context(), req)
+		if err != nil {
+			var storageErr *storage.StorageError
+			if errors.As(err, &storageErr) {
+				log.Printf("[%s] logs: storage unavailable: %v", reqID, err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			log.Printf("[%s] logs: unexpected error: %v", reqID, err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-		// 6. Marshal and write protobuf response
+		log.Printf("[%s] logs: accepted %d, rejected %d log records", reqID, result.Accepted, result.Rejected)
+
+		// 6. Build response with partial success if needed
 		resp := &collectorlogsv1.ExportLogsServiceResponse{}
+		if result.HasRejections() {
+			resp.PartialSuccess = &collectorlogsv1.ExportLogsPartialSuccess{
+				RejectedLogRecords: int64(result.Rejected),
+				ErrorMessage:       result.ErrorMessage(),
+			}
+		}
+
 		respBytes, err := proto.Marshal(resp)
 		if err != nil {
 			log.Printf("[%s] BUG: logs: failed to marshal response: %v", reqID, err)

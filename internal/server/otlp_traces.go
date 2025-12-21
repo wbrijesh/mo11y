@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -47,14 +48,31 @@ func handleTraces(store *storage.Storage) http.HandlerFunc {
 		}
 
 		// 5. Store data
-		if err := store.StoreTraces(r.Context(), req); err != nil {
-			log.Printf("[%s] traces: storage failed: %v", reqID, err)
+		result, err := store.StoreTraces(r.Context(), req)
+		if err != nil {
+			var storageErr *storage.StorageError
+			if errors.As(err, &storageErr) {
+				log.Printf("[%s] traces: storage unavailable: %v", reqID, err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			// Unknown error - treat as infrastructure
+			log.Printf("[%s] traces: unexpected error: %v", reqID, err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-		// 6. Marshal and write protobuf response
+		log.Printf("[%s] traces: accepted %d, rejected %d spans", reqID, result.Accepted, result.Rejected)
+
+		// 6. Build response with partial success if needed
 		resp := &collectortracev1.ExportTraceServiceResponse{}
+		if result.HasRejections() {
+			resp.PartialSuccess = &collectortracev1.ExportTracePartialSuccess{
+				RejectedSpans: int64(result.Rejected),
+				ErrorMessage:  result.ErrorMessage(),
+			}
+		}
+
 		respBytes, err := proto.Marshal(resp)
 		if err != nil {
 			log.Printf("[%s] BUG: traces: failed to marshal response: %v", reqID, err)

@@ -4,13 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
-	collectorlogsv1 "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	collectormetricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	collectortracev1 "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 // Storage provides database operations.
@@ -39,7 +35,32 @@ func New(dbPath string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to ping duckdb: %w", err)
 	}
 
-	return &Storage{db: db}, nil
+	s := &Storage{db: db}
+
+	// Initialize schema
+	if err := s.initSchema(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	return s, nil
+}
+
+// initSchema creates the database tables if they don't exist.
+func (s *Storage) initSchema(ctx context.Context) error {
+	statements := []string{
+		spansSchema, spansIndexes,
+		spanEventsSchema, spanEventsIndexes,
+		spanLinksSchema, spanLinksIndexes,
+		logsSchema, logsIndexes,
+		metricsSchema, metricsIndexes,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Health checks if the database connection is healthy.
@@ -55,52 +76,4 @@ func (s *Storage) Close() error {
 // DB returns the underlying sql.DB for direct queries.
 func (s *Storage) DB() *sql.DB {
 	return s.db
-}
-
-// StoreTraces stores trace data from OTLP request.
-// TODO: Implement actual storage with flattening.
-func (s *Storage) StoreTraces(ctx context.Context, req *collectortracev1.ExportTraceServiceRequest) error {
-	// Stub: count spans for logging
-	var spanCount int
-	for _, rs := range req.GetResourceSpans() {
-		for _, ss := range rs.GetScopeSpans() {
-			spanCount += len(ss.GetSpans())
-		}
-	}
-	if spanCount > 0 {
-		log.Printf("Received %d spans", spanCount)
-	}
-	return nil
-}
-
-// StoreMetrics stores metrics data from OTLP request.
-// TODO: Implement actual storage with flattening.
-func (s *Storage) StoreMetrics(ctx context.Context, req *collectormetricsv1.ExportMetricsServiceRequest) error {
-	// Stub: count metrics for logging
-	var metricCount int
-	for _, rm := range req.GetResourceMetrics() {
-		for _, sm := range rm.GetScopeMetrics() {
-			metricCount += len(sm.GetMetrics())
-		}
-	}
-	if metricCount > 0 {
-		log.Printf("Received %d metrics", metricCount)
-	}
-	return nil
-}
-
-// StoreLogs stores log data from OTLP request.
-// TODO: Implement actual storage with flattening.
-func (s *Storage) StoreLogs(ctx context.Context, req *collectorlogsv1.ExportLogsServiceRequest) error {
-	// Stub: count logs for logging
-	var logCount int
-	for _, rl := range req.GetResourceLogs() {
-		for _, sl := range rl.GetScopeLogs() {
-			logCount += len(sl.GetLogRecords())
-		}
-	}
-	if logCount > 0 {
-		log.Printf("Received %d logs", logCount)
-	}
-	return nil
 }
