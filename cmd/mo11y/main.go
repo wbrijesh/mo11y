@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,6 +23,11 @@ func main() {
 		dbPath = "mo11y.duckdb"
 	}
 
+	retentionCfg := storage.CleanupConfig{
+		RetentionHours:      getEnvInt("MO11Y_RETENTION_HOURS", 168),
+		CleanupIntervalMins: getEnvInt("MO11Y_CLEANUP_INTERVAL_MINS", 60),
+	}
+
 	// Initialize storage
 	store, err := storage.New(dbPath)
 	if err != nil {
@@ -29,8 +35,17 @@ func main() {
 	}
 	log.Printf("Connected to DuckDB: %s", dbPath)
 
+	// Create cancellable context for cleanup worker
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start cleanup worker
+	go store.StartCleanupWorker(ctx, retentionCfg)
+
 	// Create server
-	srv := server.New(server.Config{Port: port}, store)
+	srv := server.New(server.Config{
+		Port:         port,
+		RetentionCfg: retentionCfg,
+	}, store)
 	log.Printf("Starting server on :%d", port)
 
 	// Start server in goroutine
@@ -47,11 +62,14 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 
-	// Give outstanding requests 5 seconds to complete
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Stop cleanup worker
+	cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	// Give outstanding requests 5 seconds to complete
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
@@ -60,6 +78,15 @@ func main() {
 	}
 
 	log.Println("Server exited")
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return defaultVal
 }
 
 func init() {

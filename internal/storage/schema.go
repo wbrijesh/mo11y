@@ -45,6 +45,7 @@ const spansIndexes = `
 CREATE INDEX IF NOT EXISTS idx_spans_trace_id ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_start_time ON spans(start_time);
 CREATE INDEX IF NOT EXISTS idx_spans_name ON spans(name);
+CREATE INDEX IF NOT EXISTS idx_spans_ingested_at ON spans(ingested_at);
 `
 
 const spanEventsSchema = `
@@ -68,6 +69,7 @@ const spanEventsIndexes = `
 CREATE INDEX IF NOT EXISTS idx_span_events_trace_span ON span_events(trace_id, span_id);
 CREATE INDEX IF NOT EXISTS idx_span_events_name ON span_events(event_name);
 CREATE INDEX IF NOT EXISTS idx_span_events_time ON span_events(event_time);
+CREATE INDEX IF NOT EXISTS idx_span_events_ingested_at ON span_events(ingested_at);
 `
 
 const spanLinksSchema = `
@@ -93,6 +95,7 @@ CREATE TABLE IF NOT EXISTS span_links (
 const spanLinksIndexes = `
 CREATE INDEX IF NOT EXISTS idx_span_links_trace_span ON span_links(trace_id, span_id);
 CREATE INDEX IF NOT EXISTS idx_span_links_linked ON span_links(linked_trace_id, linked_span_id);
+CREATE INDEX IF NOT EXISTS idx_span_links_ingested_at ON span_links(ingested_at);
 `
 
 const logsSchema = `
@@ -138,6 +141,7 @@ const logsIndexes = `
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON logs(trace_id);
 CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity_number);
+CREATE INDEX IF NOT EXISTS idx_logs_ingested_at ON logs(ingested_at);
 `
 
 const metricsSchema = `
@@ -185,4 +189,5 @@ const metricsIndexes = `
 CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(name);
 CREATE INDEX IF NOT EXISTS idx_metrics_type ON metrics(type);
+CREATE INDEX IF NOT EXISTS idx_metrics_ingested_at ON metrics(ingested_at);
 `

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
@@ -11,7 +12,12 @@ import (
 
 // Storage provides database operations.
 type Storage struct {
-	db *sql.DB
+	db     *sql.DB
+	dbPath string
+
+	// Cleanup state
+	cleanupRunning chan struct{}
+	lastCleanup    *CleanupResult
 }
 
 // New creates a new Storage instance connected to DuckDB.
@@ -35,7 +41,11 @@ func New(dbPath string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to ping duckdb: %w", err)
 	}
 
-	s := &Storage{db: db}
+	s := &Storage{
+		db:             db,
+		dbPath:         dbPath,
+		cleanupRunning: make(chan struct{}, 1),
+	}
 
 	// Initialize schema
 	if err := s.initSchema(ctx); err != nil {
@@ -76,4 +86,67 @@ func (s *Storage) Close() error {
 // DB returns the underlying sql.DB for direct queries.
 func (s *Storage) DB() *sql.DB {
 	return s.db
+}
+
+// DBPath returns the database file path.
+func (s *Storage) DBPath() string {
+	return s.dbPath
+}
+
+// Stats returns storage statistics.
+func (s *Storage) Stats(ctx context.Context) (*StorageStats, error) {
+	stats := &StorageStats{
+		DBPath:      s.dbPath,
+		LastCleanup: s.lastCleanup,
+	}
+
+	// File sizes
+	if s.dbPath != ":memory:" {
+		if info, err := os.Stat(s.dbPath); err == nil {
+			stats.DBSizeBytes = info.Size()
+		}
+		if info, err := os.Stat(s.dbPath + ".wal"); err == nil {
+			stats.WALSizeBytes = info.Size()
+		}
+	}
+
+	// Row counts
+	row := s.db.QueryRowContext(ctx, `
+		SELECT 
+			(SELECT COUNT(*) FROM spans) as spans,
+			(SELECT COUNT(*) FROM span_events) as span_events,
+			(SELECT COUNT(*) FROM span_links) as span_links,
+			(SELECT COUNT(*) FROM logs) as logs,
+			(SELECT COUNT(*) FROM metrics) as metrics
+	`)
+	err := row.Scan(
+		&stats.Tables.Spans,
+		&stats.Tables.SpanEvents,
+		&stats.Tables.SpanLinks,
+		&stats.Tables.Logs,
+		&stats.Tables.Metrics,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get row counts: %w", err)
+	}
+
+	return stats, nil
+}
+
+// StorageStats contains storage statistics.
+type StorageStats struct {
+	DBPath       string
+	DBSizeBytes  int64
+	WALSizeBytes int64
+	Tables       TableCounts
+	LastCleanup  *CleanupResult
+}
+
+// TableCounts contains row counts for each table.
+type TableCounts struct {
+	Spans      int64
+	SpanEvents int64
+	SpanLinks  int64
+	Logs       int64
+	Metrics    int64
 }

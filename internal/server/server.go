@@ -10,7 +10,8 @@ import (
 
 // Config holds server configuration.
 type Config struct {
-	Port int
+	Port        int
+	RetentionCfg storage.CleanupConfig
 }
 
 // New creates a new HTTP server with OTLP endpoints.
@@ -19,6 +20,9 @@ func New(cfg Config, store *storage.Storage) *http.Server {
 
 	// Health endpoint (JSON)
 	mux.HandleFunc("/health", handleHealth(store))
+
+	// Stats endpoint (JSON)
+	mux.HandleFunc("/stats", handleStats(store, cfg.RetentionCfg))
 
 	// Query endpoint (JSON)
 	mux.HandleFunc("/query", handleQuery(store))
