@@ -20,6 +20,9 @@ func New(cfg Config, store *storage.Storage) *http.Server {
 	// Health endpoint (JSON)
 	mux.HandleFunc("/health", handleHealth(store))
 
+	// Query endpoint (JSON)
+	mux.HandleFunc("/query", handleQuery(store))
+
 	// OTLP endpoints (protobuf)
 	mux.HandleFunc("/v1/traces", handleTraces(store))
 	mux.HandleFunc("/v1/metrics", handleMetrics(store))
