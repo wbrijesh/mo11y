@@ -17,6 +17,8 @@ const (
 	queryRowLimit = 1000
 )
 
+var blockedKeywords = []string{"EXPLAIN", "DESCRIBE", "SHOW", "PRAGMA", "ATTACH", "DETACH"}
+
 func handleQuery(store *storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -36,8 +38,10 @@ func handleQuery(store *storage.Storage) http.HandlerFunc {
 			return
 		}
 
-		// Validate: SELECT only
-		if !strings.HasPrefix(strings.ToUpper(sql), "SELECT") {
+		upperSQL := strings.ToUpper(sql)
+
+		// Validate: SELECT or WITH only
+		if !strings.HasPrefix(upperSQL, "SELECT") && !strings.HasPrefix(upperSQL, "WITH") {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "only SELECT queries allowed"})
 			return
@@ -50,8 +54,17 @@ func handleQuery(store *storage.Storage) http.HandlerFunc {
 			return
 		}
 
+		// Validate: no blocked keywords
+		for _, kw := range blockedKeywords {
+			if strings.Contains(upperSQL, kw) {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%s not allowed", kw)})
+				return
+			}
+		}
+
 		// Add LIMIT if not present
-		if !strings.Contains(strings.ToUpper(sql), "LIMIT") {
+		if !strings.Contains(upperSQL, "LIMIT") {
 			sql = fmt.Sprintf("%s LIMIT %d", sql, queryRowLimit)
 		}
 

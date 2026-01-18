@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"mo11y/internal/auth"
 	"mo11y/internal/server"
 	"mo11y/internal/storage"
 )
@@ -18,15 +19,19 @@ import (
 func main() {
 	// Configuration
 	port := 4318 // Standard OTLP/HTTP port
-	dbPath := os.Getenv("MO11Y_DB_PATH")
-	if dbPath == "" {
-		dbPath = "mo11y.duckdb"
-	}
+	dbPath := getEnv("MO11Y_DB_PATH", "mo11y.duckdb")
+	authDisabled := getEnv("MO11Y_AUTH_DISABLED", "false") == "true"
+	authDBPath := getEnv("MO11Y_AUTH_DB_PATH", "mo11y.auth.db")
+	authPepper := os.Getenv("MO11Y_AUTH_PEPPER")
+	bootstrapKey := os.Getenv("MO11Y_BOOTSTRAP_KEY")
 
 	retentionCfg := storage.CleanupConfig{
 		RetentionHours:      getEnvInt("MO11Y_RETENTION_HOURS", 168),
 		CleanupIntervalMins: getEnvInt("MO11Y_CLEANUP_INTERVAL_MINS", 60),
 	}
+
+	maxConcurrentIngest := getEnvInt("MO11Y_MAX_CONCURRENT_INGEST", 10)
+	maxConcurrentQuery := getEnvInt("MO11Y_MAX_CONCURRENT_QUERY", 5)
 
 	// Initialize storage
 	store, err := storage.New(dbPath)
@@ -34,6 +39,31 @@ func main() {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	log.Printf("Connected to DuckDB: %s", dbPath)
+
+	// Initialize auth
+	var authProvider *auth.Auth
+	if !authDisabled {
+		if authPepper == "" {
+			log.Fatal("MO11Y_AUTH_PEPPER is required when auth is enabled. Set MO11Y_AUTH_DISABLED=true to disable auth.")
+		}
+		if len(authPepper) < 32 {
+			log.Fatal("MO11Y_AUTH_PEPPER must be at least 32 characters")
+		}
+
+		authProvider, err = auth.New(authDBPath, authPepper)
+		if err != nil {
+			log.Fatalf("Failed to initialize auth: %v", err)
+		}
+		log.Printf("Auth enabled: %s", authDBPath)
+
+		// Bootstrap admin key if needed
+		ctx := context.Background()
+		if err := authProvider.Bootstrap(ctx, bootstrapKey); err != nil {
+			log.Fatalf("Failed to bootstrap auth: %v", err)
+		}
+	} else {
+		log.Println("Auth disabled (MO11Y_AUTH_DISABLED=true)")
+	}
 
 	// Create cancellable context for cleanup worker
 	ctx, cancel := context.WithCancel(context.Background())
@@ -43,9 +73,11 @@ func main() {
 
 	// Create server
 	srv := server.New(server.Config{
-		Port:         port,
-		RetentionCfg: retentionCfg,
-	}, store)
+		Port:               port,
+		RetentionCfg:       retentionCfg,
+		MaxConcurrentIngest: maxConcurrentIngest,
+		MaxConcurrentQuery:  maxConcurrentQuery,
+	}, store, authProvider)
 	log.Printf("Starting server on :%d", port)
 
 	// Start server in goroutine
@@ -73,11 +105,24 @@ func main() {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
+	if authProvider != nil {
+		if err := authProvider.Close(); err != nil {
+			log.Printf("Error closing auth: %v", err)
+		}
+	}
+
 	if err := store.Close(); err != nil {
 		log.Printf("Error closing storage: %v", err)
 	}
 
 	log.Println("Server exited")
+}
+
+func getEnv(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }
 
 func getEnvInt(key string, defaultVal int) int {

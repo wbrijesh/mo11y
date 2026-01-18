@@ -3,6 +3,7 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -98,5 +99,30 @@ func gzipMiddleware(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(gz)
 		r.Header.Del("Content-Encoding")
 		next.ServeHTTP(w, r)
+	})
+}
+
+// Semaphore provides concurrency limiting.
+type Semaphore struct {
+	ch chan struct{}
+}
+
+// NewSemaphore creates a semaphore with the given capacity.
+func NewSemaphore(n int) *Semaphore {
+	return &Semaphore{ch: make(chan struct{}, n)}
+}
+
+// semaphoreMiddleware limits concurrent requests.
+func (s *Semaphore) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.ch <- struct{}{}:
+			defer func() { <-s.ch }()
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "too many requests"})
+		}
 	})
 }
