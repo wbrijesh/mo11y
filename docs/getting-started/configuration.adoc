@@ -1,0 +1,31 @@
+= Configuration
+
+== Environment Variables
+
+|===
+|Variable |Default |Description
+
+|`MO11Y_DB_PATH`
+|`mo11y.duckdb`
+|Path to DuckDB database file
+|===
+
+== Examples
+
+[source,bash]
+----
+# Use custom database path
+MO11Y_DB_PATH=/var/lib/mo11y/data.duckdb ./mo11y
+
+# In-memory database (data lost on restart)
+MO11Y_DB_PATH=:memory: ./mo11y
+----
+
+== Docker
+
+[source,bash]
+----
+docker-compose up
+----
+
+Data persists in the `mo11y_data` volume.

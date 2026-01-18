@@ -1,0 +1,8 @@
+= References
+
+External specifications and protocol documentation used when building mo11y.
+
+== Contents
+
+* link:opentelemetry-specification.adoc[OpenTelemetry Specification] - OTLP/HTTP protocol requirements
+* link:opentelemetry-proto.adoc[OpenTelemetry Proto] - Protobuf message definitions and Go packages

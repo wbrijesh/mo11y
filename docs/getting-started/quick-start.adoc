@@ -1,0 +1,53 @@
+= Getting Started
+
+== Prerequisites
+
+* Go 1.24+ with CGO enabled
+
+== Build and Run
+
+[source,bash]
+----
+git clone <repo-url>
+cd mo11y
+make build
+./mo11y
+----
+
+Server starts on port 4318 (standard OTLP/HTTP port).
+
+== Verify It's Running
+
+[source,bash]
+----
+curl localhost:4318/health
+----
+
+Response:
+[source,json]
+----
+{"status":"healthy","database":"connected","message":"mo11y is running"}
+----
+
+== Send Test Data
+
+Any OpenTelemetry SDK configured to export via OTLP/HTTP will work. Point it at `http://localhost:4318`.
+
+Example with Go:
+
+[source,go]
+----
+exporter, _ := otlptracehttp.New(ctx,
+    otlptracehttp.WithEndpoint("localhost:4318"),
+    otlptracehttp.WithInsecure(),
+)
+----
+
+== Query Your Data
+
+[source,bash]
+----
+curl -X POST localhost:4318/query -d "sql=SELECT name, duration_ns/1e6 as ms FROM spans"
+----
+
+See link:querying.adoc[Querying] for more examples.

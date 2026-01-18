@@ -1,0 +1,118 @@
+= Querying
+
+mo11y exposes a SQL query endpoint at `POST /query`.
+
+== Request Format
+
+[source,bash]
+----
+curl -X POST localhost:4318/query -d "sql=<your query>"
+----
+
+== Response Format
+
+[source,json]
+----
+{
+  "columns": ["name", "value"],
+  "rows": [{"name": "example", "value": 42}],
+  "count": 1
+}
+----
+
+== Traces
+
+[source,sql]
+----
+-- Recent spans
+SELECT name, duration_ns/1e6 as ms, start_time
+FROM spans
+ORDER BY start_time DESC
+LIMIT 10;
+
+-- Slowest operations
+SELECT name, AVG(duration_ns)/1e6 as avg_ms, COUNT(*) as count
+FROM spans
+GROUP BY name
+ORDER BY avg_ms DESC;
+
+-- Find a trace
+SELECT span_id, name, duration_ns/1e6 as ms
+FROM spans
+WHERE trace_id = 'abc123...'
+ORDER BY start_time;
+
+-- Span events
+SELECT s.name, e.event_name, e.event_time
+FROM spans s
+JOIN span_events e ON s.trace_id = e.trace_id AND s.span_id = e.span_id
+WHERE s.trace_id = 'abc123...';
+----
+
+== Logs
+
+[source,sql]
+----
+-- Recent logs
+SELECT timestamp, severity_text, body
+FROM logs
+ORDER BY timestamp DESC
+LIMIT 20;
+
+-- Errors only
+SELECT timestamp, body
+FROM logs
+WHERE severity_number >= 17
+ORDER BY timestamp DESC;
+
+-- Logs for a trace
+SELECT timestamp, severity_text, body
+FROM logs
+WHERE trace_id = 'abc123...'
+ORDER BY timestamp;
+----
+
+== Metrics
+
+[source,sql]
+----
+-- Latest metric values
+SELECT name, type, value, timestamp
+FROM metrics
+ORDER BY timestamp DESC
+LIMIT 20;
+
+-- Metric types: 1=Gauge, 2=Sum, 3=Histogram
+
+-- Sum metrics over time
+SELECT name, SUM(value) as total
+FROM metrics
+WHERE type = 2
+GROUP BY name;
+
+-- Gauge averages
+SELECT name, AVG(value) as avg_value
+FROM metrics
+WHERE type = 1
+GROUP BY name;
+----
+
+== Attribute Access
+
+Resource and span attributes are stored as MAPs:
+
+[source,sql]
+----
+-- Filter by service name
+SELECT name, duration_ns/1e6 as ms
+FROM spans
+WHERE resource_attrs['service.name'] = 'my-service';
+
+-- Extract custom attributes
+SELECT 
+    name,
+    attrs['http.method'] as method,
+    attrs['http.status_code'] as status
+FROM spans
+WHERE attrs['http.method'] IS NOT NULL;
+----

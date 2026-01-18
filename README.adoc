@@ -1,21 +1,32 @@
 = mo11y
 
+OTLP-native observability backend powered by DuckDB's analytical engine. Built for side projects and small-scale deployments where running Jaeger, Prometheus, and Loki is overkill.
+
+Receives traces, logs, and metrics via standard OpenTelemetry protocol. Stores everything in a single embedded database. Query with SQL.
+
 **m**ini + **o11y** (observability) = **mo11y** (pronounced "molly")
 
-== What is mo11y?
+== Features
 
-An observability solution designed for small-scale projects. Most observability tools are built for large-scale production systems. mo11y is built for personal projects, side projects, and small applications that don't need enterprise-grade complexity.
+* OTLP/HTTP ingestion (port 4318)
+* All three signals: traces, logs, metrics
+* DuckDB columnar storage with compression
+* SQL query endpoint for ad-hoc analysis
+* Embedded database, no external services required
+
+== Getting Started
+
+* link:docs/getting-started/quick-start.adoc[Quick Start] - Run the server and send your first traces
+* link:docs/getting-started/configuration.adoc[Configuration] - Environment variables and options
+* link:docs/getting-started/querying.adoc[Querying] - SQL examples for traces, logs, and metrics
+* link:docs/getting-started/sdk-setup.adoc[SDK Setup] - Configure OpenTelemetry SDKs
+
+== Internals
+
+* link:docs/design/index.adoc[Design Documents] - Architecture and schema details
+* link:docs/adr/index.adoc[ADRs] - Technical decisions and rationale
+* link:docs/references/index.adoc[References] - OpenTelemetry protocol specs
 
 == Status
 
-Currently in planning and design phase.
-
-== Documentation
-
-* link:docs/adr/index.adoc[Architectural Decision Records] - Technical decisions and their rationale
-* link:docs/design/index.adoc[Design Documents] - Detailed component and feature designs
-* link:docs/references/[References] - External specifications and protocols
-
-== Philosophy
-
-Small-scale projects deserve thoughtful observability without the overhead of tools designed for massive scale. mo11y aims to provide meaningful insights with minimal setup and resource usage.
+Core ingestion and storage complete. Dashboard and auth planned.

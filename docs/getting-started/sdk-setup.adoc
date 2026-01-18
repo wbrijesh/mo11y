@@ -1,0 +1,86 @@
+= SDK Setup
+
+Configure OpenTelemetry SDKs to send telemetry to mo11y.
+
+== Environment Variables (Any SDK)
+
+[source,bash]
+----
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+----
+
+== Go
+
+[source,go]
+----
+import (
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+)
+
+// Traces
+traceExporter, _ := otlptracehttp.New(ctx,
+    otlptracehttp.WithEndpoint("localhost:4318"),
+    otlptracehttp.WithInsecure(),
+)
+
+// Metrics
+metricExporter, _ := otlpmetrichttp.New(ctx,
+    otlpmetrichttp.WithEndpoint("localhost:4318"),
+    otlpmetrichttp.WithInsecure(),
+)
+
+// Logs
+logExporter, _ := otlploghttp.New(ctx,
+    otlploghttp.WithEndpoint("localhost:4318"),
+    otlploghttp.WithInsecure(),
+)
+----
+
+== Python
+
+[source,python]
+----
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+
+trace_exporter = OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces")
+metric_exporter = OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics")
+log_exporter = OTLPLogExporter(endpoint="http://localhost:4318/v1/logs")
+----
+
+== JavaScript/Node.js
+
+[source,javascript]
+----
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+const { OTLPMetricExporter } = require('@opentelemetry/exporter-metrics-otlp-http');
+const { OTLPLogExporter } = require('@opentelemetry/exporter-logs-otlp-http');
+
+const traceExporter = new OTLPTraceExporter({
+  url: 'http://localhost:4318/v1/traces',
+});
+
+const metricExporter = new OTLPMetricExporter({
+  url: 'http://localhost:4318/v1/metrics',
+});
+
+const logExporter = new OTLPLogExporter({
+  url: 'http://localhost:4318/v1/logs',
+});
+----
+
+== Java
+
+[source,java]
+----
+// build.gradle
+implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+
+// Configure via environment variables or system properties
+// -Dotel.exporter.otlp.endpoint=http://localhost:4318
+// -Dotel.exporter.otlp.protocol=http/protobuf
+----
